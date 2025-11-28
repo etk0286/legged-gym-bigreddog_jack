@@ -205,21 +205,21 @@ class BigReddogHimRoughCfgJack( LeggedRobotCfg ):
     class rewards( LeggedRobotCfg.rewards ):
         class scales:
             termination = -0.0
-            tracking_lin_vel = 1.4
+            tracking_lin_vel = 1.5
             tracking_ang_vel = 0.5
             lin_vel_z = -2.0
             ang_vel_xy = -0.08
-            orientation = -0.05
+            orientation = -0.25
             dof_acc = -2.5e-7
             joint_power = -2e-5
-            base_height = -1.5
-            foot_clearance = -0.005
-            action_rate = -0.02
+            base_height = -1.0
+            foot_clearance = -0.03
+            action_rate = -0.03
             smoothness = -0.01
             feet_air_time =  0.0
             collision = -0.0
             feet_stumble = -0.0
-            stand_still = -0.05
+            stand_still = -0.18
             torques = -0.0
             dof_vel = -0.0
             dof_pos_limits = -0.0
