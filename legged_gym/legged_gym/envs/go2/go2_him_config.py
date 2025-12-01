@@ -178,7 +178,7 @@ class Go2HimRoughCfg( LeggedRobotCfg ):
             joint_power = -2e-5
             base_height = -1.0
             foot_clearance = -0.02
-            action_rate = -0.02
+            action_rate = -0.01
             smoothness = -0.01
             feet_air_time =  0.0
             collision = -0.0
@@ -195,7 +195,7 @@ class Go2HimRoughCfg( LeggedRobotCfg ):
         soft_dof_pos_limit = 1. # percentage of urdf limits, values above this limit are penalized
         soft_dof_vel_limit = 1.
         soft_torque_limit = 1.
-        base_height_target = 0.34
+        base_height_target = 0.30
         max_contact_force = 150. # forces above this value are penalized
         clearance_height_target = -0.20
 
