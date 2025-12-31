@@ -47,7 +47,12 @@ from legged_gym.utils.terrain import Terrain
 from legged_gym.utils.math import quat_apply_yaw, wrap_to_pi, torch_rand_sqrt_float
 from legged_gym.utils.helpers import class_to_dict
 from .legged_robot_config import LeggedRobotCfg
-
+COM_OFFSET = torch.tensor([0.012731, 0.002186, 0.000515])
+HIP_OFFSETS = torch.tensor([
+    [0.183, 0.047, 0.],
+    [0.183, -0.047, 0.],
+    [-0.183, 0.047, 0.],
+    [-0.183, -0.047, 0.]]) + COM_OFFSET
 class LeggedRobot(BaseTask):
     def __init__(self, cfg: LeggedRobotCfg, sim_params, physics_engine, sim_device, headless):
         """ Parses the provided config file,
@@ -574,7 +579,33 @@ class LeggedRobot(BaseTask):
         # reward episode sums
         self.episode_sums = {name: torch.zeros(self.num_envs, dtype=torch.float, device=self.device, requires_grad=False)
                              for name in self.reward_scales.keys()}
+    
+    def foot_position_in_hip_frame(self, angles, l_hip_sign=1):
+        theta_ab, theta_hip, theta_knee = angles[:, 0], angles[:, 1], angles[:, 2]
+        l_up = 0.2
+        l_low = 0.2
+        l_hip = 0.08505 * l_hip_sign
+        leg_distance = torch.sqrt(l_up**2 + l_low**2 +
+                                2 * l_up * l_low * torch.cos(theta_knee))
+        eff_swing = theta_hip + theta_knee / 2
 
+        off_x_hip = -leg_distance * torch.sin(eff_swing)
+        off_z_hip = -leg_distance * torch.cos(eff_swing)
+        off_y_hip = l_hip
+
+        off_x = off_x_hip
+        off_y = torch.cos(theta_ab) * off_y_hip - torch.sin(theta_ab) * off_z_hip
+        off_z = torch.sin(theta_ab) * off_y_hip + torch.cos(theta_ab) * off_z_hip
+        return torch.stack([off_x, off_y, off_z], dim=-1)
+
+    def foot_positions_in_base_frame(self, foot_angles):
+        foot_positions = torch.zeros_like(foot_angles)
+        for i in range(4):
+            foot_positions[:, i * 3:i * 3 + 3].copy_(
+                self.foot_position_in_hip_frame(foot_angles[:, i * 3: i * 3 + 3], l_hip_sign=(-1)**(i)))
+        foot_positions = foot_positions + HIP_OFFSETS.reshape(12,).to(self.device)
+        return foot_positions
+    
     def _create_ground_plane(self):
         """ Adds a ground plane to the simulation, sets friction and restitution based on the cfg.
         """

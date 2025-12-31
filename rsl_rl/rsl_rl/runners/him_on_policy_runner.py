@@ -33,13 +33,16 @@ import os
 from collections import deque
 import statistics
 
+import numpy as np
 from torch.utils.tensorboard import SummaryWriter
 import torch
 
 from rsl_rl.algorithms import PPO, HIMPPO
 from rsl_rl.modules import HIMActorCritic
 from rsl_rl.env import VecEnv
-
+from rsl_rl.algorithms.amp_discriminator import AMPDiscriminator
+from rsl_rl.datasets.motion_loader import AMPLoader
+from rsl_rl.utils.utils import Normalizer
 
 class HIMOnPolicyRunner:
 
@@ -66,8 +69,23 @@ class HIMOnPolicyRunner:
                                                         self.env.num_one_step_obs,
                                                         self.env.num_actions,
                                                         **self.policy_cfg).to(self.device)
-        alg_class = eval(self.cfg["algorithm_class_name"]) # HIMPPO
-        self.alg: HIMPPO = alg_class(actor_critic, device=self.device, **self.alg_cfg)
+        amp_data = AMPLoader(
+            device, time_between_frames=self.env.dt, preload_transitions=True,
+            num_preload_transitions=train_cfg['runner']['amp_num_preload_transitions'],
+            motion_files=self.cfg["amp_motion_files"])
+        amp_normalizer = Normalizer(amp_data.observation_dim)
+        discriminator = AMPDiscriminator(
+            amp_data.observation_dim * 2,
+            train_cfg['runner']['amp_reward_coef'],
+            train_cfg['runner']['amp_discr_hidden_dims'], device,
+            train_cfg['runner']['amp_task_reward_lerp']).to(self.device)
+
+        # self.discr: AMPDiscriminator = AMPDiscriminator()
+        alg_class = eval(self.cfg["algorithm_class_name"]) # PPO
+        min_std = (
+            torch.tensor(self.cfg["min_normalized_std"], device=self.device) *
+            (torch.abs(self.env.dof_pos_limits[:, 1] - self.env.dof_pos_limits[:, 0])))
+        self.alg: HIMPPO = alg_class(actor_critic,discriminator, amp_data, amp_normalizer, device=self.device, **self.alg_cfg)
         self.num_steps_per_env = self.cfg["num_steps_per_env"]
         self.save_interval = self.cfg["save_interval"]
 
@@ -91,9 +109,11 @@ class HIMOnPolicyRunner:
             self.env.episode_length_buf = torch.randint_like(self.env.episode_length_buf, high=int(self.env.max_episode_length))
         obs = self.env.get_observations()
         privileged_obs = self.env.get_privileged_observations()
+        amp_obs = self.env.get_amp_observations()
         critic_obs = privileged_obs if privileged_obs is not None else obs
-        obs, critic_obs = obs.to(self.device), critic_obs.to(self.device)
+        obs, critic_obs, amp_obs = obs.to(self.device), critic_obs.to(self.device), amp_obs.to(self.device)
         self.alg.actor_critic.train() # switch to train mode (for dropout for example)
+        self.alg.discriminator.train()
 
         ep_infos = []
         rewbuffer = deque(maxlen=100)
@@ -107,18 +127,64 @@ class HIMOnPolicyRunner:
             # Rollout
             with torch.inference_mode():
                 for i in range(self.num_steps_per_env):
-                    actions = self.alg.act(obs, critic_obs)
-                    obs, privileged_obs, rewards, dones, infos, termination_ids, termination_privileged_obs = self.env.step(actions)
 
+                    # 1️⃣ policy action（同時給 AMP 用 amp_obs）
+                    actions = self.alg.act(obs, critic_obs, amp_obs)
+
+                    # 2️⃣ env step（同時回傳 AMP + HiMLoco 需要的資訊）
+                    (
+                        obs,
+                        privileged_obs,
+                        rewards,
+                        dones,
+                        infos,
+                        termination_ids,              # 給 HiMLoco
+                        termination_privileged_obs,   # 給 HiMLoco
+                        terminal_amp_states,          # 給 AMP
+                    ) = self.env.step(actions)
+
+                    # 3️⃣ 取得 next AMP observation
+                    next_amp_obs = self.env.get_amp_observations()
+
+                    # 4️⃣ critic observation（HiMLoco / PPO）
                     critic_obs = privileged_obs if privileged_obs is not None else obs
-                    obs, critic_obs, rewards, dones = obs.to(self.device), critic_obs.to(self.device), rewards.to(self.device), dones.to(self.device)
+
+                    # 5️⃣ device
+                    obs = obs.to(self.device)
+                    critic_obs = critic_obs.to(self.device)
+                    rewards = rewards.to(self.device)
+                    dones = dones.to(self.device)
+                    next_amp_obs = next_amp_obs.to(self.device)
                     termination_ids = termination_ids.to(self.device)
                     termination_privileged_obs = termination_privileged_obs.to(self.device)
 
+                    # 6️⃣ AMP：處理 terminal AMP state
+                    next_amp_obs_with_term = next_amp_obs.clone()
+                    next_amp_obs_with_term[termination_ids] = terminal_amp_states
+
+                    # 7️⃣ HiMLoco：處理 next_critic_obs
                     next_critic_obs = critic_obs.clone().detach()
                     next_critic_obs[termination_ids] = termination_privileged_obs.clone().detach()
 
-                    self.alg.process_env_step(rewards, dones, infos, next_critic_obs)
+                    # 8️⃣ ⭐ AMP reward（唯一使用 discriminator 的地方）
+                    rewards = self.alg.discriminator.predict_amp_reward(
+                        amp_obs,
+                        next_amp_obs_with_term,
+                        rewards,
+                        normalizer=self.alg.amp_normalizer,
+                    )[0]
+
+                    # 9️⃣ 更新 amp_obs
+                    amp_obs = next_amp_obs.clone()
+
+                    # 🔟 同時交給 PPO / HiMLoco / AMP
+                    self.alg.process_env_step(
+                        rewards,
+                        dones,
+                        infos,
+                        next_critic_obs,          # 給 critic / estimator
+                        next_amp_obs_with_term,   # 給 discriminator replay buffer
+                    )
                 
                     if self.log_dir is not None:
                         # Book keeping
@@ -139,7 +205,7 @@ class HIMOnPolicyRunner:
                 start = stop
                 self.alg.compute_returns(critic_obs)
                 
-            mean_value_loss, mean_surrogate_loss, mean_estimation_loss, mean_swap_loss = self.alg.update()
+            mean_value_loss, mean_surrogate_loss, mean_estimation_loss, mean_swap_loss,mean_amp_loss, mean_grad_pen_loss, mean_policy_pred, mean_expert_pred = self.alg.update()
             stop = time.time()
             learn_time = stop - start
             if self.log_dir is not None:
@@ -175,6 +241,8 @@ class HIMOnPolicyRunner:
 
         self.writer.add_scalar('Loss/value_function', locs['mean_value_loss'], locs['it'])
         self.writer.add_scalar('Loss/surrogate', locs['mean_surrogate_loss'], locs['it'])
+        self.writer.add_scalar('Loss/AMP', locs['mean_amp_loss'], locs['it'])
+        self.writer.add_scalar('Loss/AMP_grad', locs['mean_grad_pen_loss'], locs['it'])
         self.writer.add_scalar('Loss/Estimation Loss', locs['mean_estimation_loss'], locs['it'])
         self.writer.add_scalar('Loss/Swap Loss', locs['mean_swap_loss'], locs['it'])
         self.writer.add_scalar('Loss/learning_rate', self.alg.learning_rate, locs['it'])
@@ -199,6 +267,10 @@ class HIMOnPolicyRunner:
                           f"""{'Surrogate loss:':>{pad}} {locs['mean_surrogate_loss']:.4f}\n"""
                           f"""{'Estimation loss:':>{pad}} {locs['mean_estimation_loss']:.4f}\n"""
                           f"""{'Swap loss:':>{pad}} {locs['mean_swap_loss']:.4f}\n"""
+                          f"""{'AMP loss:':>{pad}} {locs['mean_amp_loss']:.4f}\n"""
+                          f"""{'AMP grad pen loss:':>{pad}} {locs['mean_grad_pen_loss']:.4f}\n"""
+                          f"""{'AMP mean policy pred:':>{pad}} {locs['mean_policy_pred']:.4f}\n"""
+                          f"""{'AMP mean expert pred:':>{pad}} {locs['mean_expert_pred']:.4f}\n"""
                           f"""{'Mean action noise std:':>{pad}} {mean_std.item():.2f}\n"""
                           f"""{'Mean reward:':>{pad}} {statistics.mean(locs['rewbuffer']):.2f}\n"""
                           f"""{'Mean episode length:':>{pad}} {statistics.mean(locs['lenbuffer']):.2f}\n""")
@@ -231,6 +303,8 @@ class HIMOnPolicyRunner:
             'model_state_dict': self.alg.actor_critic.state_dict(),
             'optimizer_state_dict': self.alg.optimizer.state_dict(),
             'estimator_optimizer_state_dict': self.alg.actor_critic.estimator.optimizer.state_dict(),
+            'discriminator_state_dict': self.alg.discriminator.state_dict(),
+            'amp_normalizer': self.alg.amp_normalizer,
             'iter': self.current_learning_iteration,
             'infos': infos,
             }, path)
@@ -238,6 +312,8 @@ class HIMOnPolicyRunner:
     def load(self, path, load_optimizer=True):
         loaded_dict = torch.load(path, weights_only=True)
         self.alg.actor_critic.load_state_dict(loaded_dict['model_state_dict'])
+        self.alg.discriminator.load_state_dict(loaded_dict['discriminator_state_dict'])
+        self.alg.amp_normalizer = loaded_dict['amp_normalizer']
         if load_optimizer:
             self.alg.optimizer.load_state_dict(loaded_dict['optimizer_state_dict'])
             self.alg.actor_critic.estimator.optimizer.load_state_dict(loaded_dict['estimator_optimizer_state_dict'])

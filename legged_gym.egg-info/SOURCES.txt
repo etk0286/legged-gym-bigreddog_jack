@@ -1,0 +1,7 @@
+LICENSE
+setup.py
+legged_gym.egg-info/PKG-INFO
+legged_gym.egg-info/SOURCES.txt
+legged_gym.egg-info/dependency_links.txt
+legged_gym.egg-info/requires.txt
+legged_gym.egg-info/top_level.txt

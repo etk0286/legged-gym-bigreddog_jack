@@ -83,7 +83,7 @@ class LeggedRobot(BaseTask):
     def reset(self):
         """ Reset all robots"""
         self.reset_idx(torch.arange(self.num_envs, device=self.device))
-        obs, privileged_obs, _, _, _, _, _ = self.step(torch.zeros(self.num_envs, self.num_actions, device=self.device, requires_grad=False))
+        obs, privileged_obs, _, _, _, _, _ ,_= self.step(torch.zeros(self.num_envs, self.num_actions, device=self.device, requires_grad=False))
         return obs, privileged_obs
     
     def step(self, actions):
@@ -109,14 +109,15 @@ class LeggedRobot(BaseTask):
             if self.device == 'cpu':
                 self.gym.fetch_results(self.sim, True)
             self.gym.refresh_dof_state_tensor(self.sim)
-        termination_ids, termination_priveleged_obs = self.post_physics_step()
+        termination_ids, termination_priveleged_obs, termination_amp_states = self.post_physics_step()
+        
 
         # return clipped obs, clipped states (None), rewards, dones and infos
         clip_obs = self.cfg.normalization.clip_observations
         self.obs_buf = torch.clip(self.obs_buf, -clip_obs, clip_obs)
         if self.privileged_obs_buf is not None:
             self.privileged_obs_buf = torch.clip(self.privileged_obs_buf, -clip_obs, clip_obs)
-        return self.obs_buf, self.privileged_obs_buf, self.rew_buf, self.reset_buf, self.extras, termination_ids, termination_priveleged_obs
+        return self.obs_buf, self.privileged_obs_buf, self.rew_buf, self.reset_buf, self.extras, termination_ids, termination_priveleged_obs,termination_amp_states
 
     def post_physics_step(self):
         """ check terminations, compute observations and rewards
@@ -146,6 +147,7 @@ class LeggedRobot(BaseTask):
         self.compute_reward()
         env_ids = self.reset_buf.nonzero(as_tuple=False).flatten()
         termination_privileged_obs = self.compute_termination_observations(env_ids)
+        termination_amp_states = self.get_amp_observations()[env_ids]
         self.reset_idx(env_ids)
         self.compute_observations() # in some cases a simulation step might be required to refresh some obs (for example body positions)
 
@@ -159,8 +161,19 @@ class LeggedRobot(BaseTask):
         if self.viewer and self.enable_viewer_sync and self.debug_viz:
             self._draw_debug_vis()
 
-        return env_ids, termination_privileged_obs
-
+        return env_ids, termination_privileged_obs,termination_amp_states
+    
+    def get_amp_observations(self):
+        joint_pos = self.dof_pos
+        foot_pos = self.foot_positions_in_base_frame(self.dof_pos).to(self.device)
+        base_lin_vel = self.base_lin_vel
+        base_ang_vel = self.base_ang_vel
+        joint_vel = self.dof_vel
+        z_pos = self.root_states[:, 2:3]
+        return torch.cat((joint_pos, foot_pos, base_lin_vel, base_ang_vel, joint_vel, z_pos), dim=-1)
+    
+    
+    
     def check_termination(self):
         """ Check if environments need to be reset
         """

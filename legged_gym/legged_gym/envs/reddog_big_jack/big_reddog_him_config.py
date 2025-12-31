@@ -27,9 +27,9 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 # Copyright (c) 2021 ETH Zurich, Nikita Rudin
-
+import glob
 from legged_gym.envs.base.him_robot_config import LeggedRobotCfg, LeggedRobotCfgPPO
-
+MOTION_FILES = glob.glob('/home/csl/amp/AMP_for_hardware/datasets/anymal/expert_trot_0_5.txt')
 class BigReddogHimRoughCfgJack( LeggedRobotCfg ):
 
     class env:
@@ -252,8 +252,12 @@ class BigReddogHimRoughCfgPPOJack( LeggedRobotCfgPPO ):
     class runner( LeggedRobotCfgPPO.runner ):
         run_name = ''
         experiment_name = 'rough_big_reddog_himLoco_jack'
-        
+        amp_reward_coef = 2.0
+        amp_motion_files = MOTION_FILES
+        amp_num_preload_transitions = 2000000
+        amp_task_reward_lerp = 0.3
+        amp_discr_hidden_dims = [1024, 512]
         save_interval = 100 # check for potential saves every this many iterations
         max_iterations = 10000 # number of policy updates
 
-  
+        min_normalized_std = [0.05, 0.02, 0.05] * 4
