@@ -33,7 +33,7 @@ MOTION_FILES = glob.glob('/home/csl/amp/AMP_for_hardware/datasets/anymal/expert_
 class BigReddogHimRoughCfgJack( LeggedRobotCfg ):
 
     class env:
-        num_envs = 2000
+        num_envs = 1000
         num_one_step_observations = 45
         num_observations = num_one_step_observations * 6
         num_one_step_privileged_obs = 45 + 3 + 3 #+ 187 # additional: base_lin_vel, external_forces, scan_dots
@@ -44,7 +44,7 @@ class BigReddogHimRoughCfgJack( LeggedRobotCfg ):
         episode_length_s = 20 # episode length in seconds
 
     class terrain:
-        mesh_type = 'trimesh' # "heightfield" # none, plane, heightfield or trimesh
+        mesh_type = 'plane' # "heightfield" # none, plane, heightfield or trimesh
         horizontal_scale = 0.1 # [m]
         vertical_scale = 0.005 # [m]
         border_size = 25 # [m]
@@ -147,7 +147,7 @@ class BigReddogHimRoughCfgJack( LeggedRobotCfg ):
                 heading = [-3.14, 3.14]
 
     class terrain( LeggedRobotCfg.terrain ):
-        mesh_type = 'trimesh'
+        mesh_type = 'plane'
         vertical_scale = 0.002 # m
 
     class asset( LeggedRobotCfg.asset ):
