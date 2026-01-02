@@ -33,10 +33,10 @@ MOTION_FILES = glob.glob('/home/csl/amp/AMP_for_hardware/datasets/anymal/expert_
 class BigReddogHimRoughCfgJack( LeggedRobotCfg ):
 
     class env:
-        num_envs = 4096
+        num_envs = 2000
         num_one_step_observations = 45
         num_observations = num_one_step_observations * 6
-        num_one_step_privileged_obs = 45 + 3 + 3 + 187 # additional: base_lin_vel, external_forces, scan_dots
+        num_one_step_privileged_obs = 45 + 3 + 3 #+ 187 # additional: base_lin_vel, external_forces, scan_dots
         num_privileged_obs = num_one_step_privileged_obs * 1 # if not None a priviledge_obs_buf will be returned by step() (critic obs for assymetric training). None is returned otherwise 
         num_actions = 12
         env_spacing = 3.  # not used with heightfields/trimeshes 
@@ -254,7 +254,7 @@ class BigReddogHimRoughCfgPPOJack( LeggedRobotCfgPPO ):
         experiment_name = 'rough_big_reddog_himLoco_jack'
         amp_reward_coef = 2.0
         amp_motion_files = MOTION_FILES
-        amp_num_preload_transitions = 2000000
+        amp_num_preload_transitions = 50000
         amp_task_reward_lerp = 0.3
         amp_discr_hidden_dims = [1024, 512]
         save_interval = 100 # check for potential saves every this many iterations
